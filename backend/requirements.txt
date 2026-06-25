@@ -1,0 +1,25 @@
+# --- Core RAG stack ---
+llama-index-core==0.11.23
+llama-index-llms-openai==0.2.16
+llama-index-embeddings-openai==0.2.5
+llama-index-vector-stores-chroma==0.2.1
+llama-index-readers-file==0.2.2
+
+# --- Vector database ---
+chromadb==0.5.18
+
+# --- Document parsing ---
+PyMuPDF==1.24.13
+docx2txt==0.9          # required by LlamaIndex to read .docx (Word) files
+
+# --- Backend API ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.2
+
+# --- Config / env ---
+python-dotenv==1.0.1
+
+# --- Frontend (Streamlit) ---
+streamlit==1.40.2
+requests==2.32.3
