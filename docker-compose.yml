@@ -1,0 +1,29 @@
+# Optional: run the whole app with `docker compose up --build`.
+# NOTE: run `python ingest.py` (or the ingest step) at least once so the
+# chroma_store/ volume is populated before /chat will work.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist the vector store + let you edit docs without rebuilding.
+      - ./chroma_store:/app/chroma_store
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      # Inside the compose network the backend is reachable by service name.
+      - BACKEND_URL=http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend

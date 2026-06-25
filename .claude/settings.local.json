@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -c \"from chromadb.api.models.Collection import Collection; print\\('query' in dir\\(Collection\\), 'get' in dir\\(Collection\\)\\)\")",
+      "Bash(../.venv/Scripts/python retriever.py)",
+      "Bash(../.venv/Scripts/python ingest.py)",
+      "Bash(.venv/Scripts/python -m py_compile backend/retriever.py backend/main.py frontend/app.py)",
+      "Bash(.venv/Scripts/python -m py_compile frontend/app.py)"
+    ]
+  }
+}
