@@ -1,10 +1,13 @@
 """
-app.py — Streamlit chat UI for the HR Policy Chatbot.
+app.py — Streamlit UI for the HR Policy Chatbot (with login + saved history).
 
-It's a thin client: it just sends the user's question to the FastAPI backend
-(/chat) and renders the answer + the source snippets it was based on.
+Flow:
+    Not logged in  -> show Login / Register tabs.
+    Logged in      -> sidebar lists your past conversations (+ "New chat" + logout);
+                      main area is the chat. Every Q&A is saved to the backend DB.
 
-Run (backend must already be running on port 8000):
+The login token lives in st.session_state, so refreshing the browser logs you
+out (kept simple on purpose). Run with the backend already up on port 8000:
     cd frontend
     streamlit run app.py
 """
@@ -13,119 +16,228 @@ import os
 import requests
 import streamlit as st
 
-# Where the FastAPI backend lives. Override with BACKEND_URL env var if needed.
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="HR Policy Chatbot", page_icon="💬", layout="centered")
 
-st.title("💬 HR Policy Chatbot")
-st.caption(
-    "Ask me anything about company HR policies — leave, WFH, expenses, benefits. "
-    "Answers come straight from the HR documents."
-)
 
-# --- Sidebar: status + example questions ---
-with st.sidebar:
-    st.header("About")
-    st.markdown(
-        "This assistant uses **RAG** (Retrieval-Augmented Generation):\n"
-        "1. Finds the most relevant policy sections\n"
-        "2. Asks GPT to answer using only those sections\n\n"
-        "Built with FastAPI · LlamaIndex · ChromaDB · OpenAI."
-    )
+# --------------------------------------------------------------------------- #
+# Backend helpers
+# --------------------------------------------------------------------------- #
+def _auth_headers() -> dict:
+    return {"Authorization": f"Bearer {st.session_state.get('token', '')}"}
 
-    # Live backend health indicator.
+
+def api_post(path: str, payload: dict, auth: bool = True) -> requests.Response:
+    headers = _auth_headers() if auth else {}
+    return requests.post(f"{BACKEND_URL}{path}", json=payload, headers=headers, timeout=60)
+
+
+def api_get(path: str) -> requests.Response:
+    return requests.get(f"{BACKEND_URL}{path}", headers=_auth_headers(), timeout=30)
+
+
+def api_delete(path: str) -> requests.Response:
+    return requests.delete(f"{BACKEND_URL}{path}", headers=_auth_headers(), timeout=30)
+
+
+def backend_online() -> bool:
     try:
-        ok = requests.get(f"{BACKEND_URL}/health", timeout=3).ok
-        if ok:
-            st.success("Backend: connected ✅")
-        else:
-            st.error("Backend: error ❌")
+        return requests.get(f"{BACKEND_URL}/health", timeout=3).ok
     except requests.RequestException:
-        st.error("Backend: offline ❌")
-        st.caption(f"Expected at {BACKEND_URL}")
-
-    st.divider()
-    st.subheader("Try asking")
-    examples = [
-        "How many annual leave days do I get?",
-        "What is the work from home policy?",
-        "How do I claim travel expenses?",
-        "How do I apply for a referral bonus?",
-    ]
-    for ex in examples:
-        if st.button(ex, use_container_width=True):
-            st.session_state.pending = ex
-
-    if st.button("🗑️ Clear chat", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
+        return False
 
 
-# --- Helpers (defined before use, since Streamlit runs the script top-to-bottom) ---
 def render_sources(sources: list[dict]) -> None:
     """Show each retrieved chunk in full, with its file + page + score."""
+    if not sources:
+        return
     with st.expander("📄 Sources"):
         for s in sources:
             page = f" · page {s['page']}" if s.get("page") else ""
             score = f" · score {s['score']}" if s.get("score") else ""
             st.markdown(f"**{s['file']}**{page}{score}")
-            # Show the FULL chunk in a scrollable box so the answer line is
-            # always visible, even if it sits near the end of the chunk.
             st.text(s["text"])
             st.divider()
 
 
-def ask_backend(question: str) -> dict:
-    resp = requests.post(
-        f"{BACKEND_URL}/chat", json={"question": question}, timeout=60
-    )
-    resp.raise_for_status()
-    return resp.json()
+# --------------------------------------------------------------------------- #
+# Login / Register screen
+# --------------------------------------------------------------------------- #
+def login_screen() -> None:
+    st.title("💬 HR Policy Chatbot")
+    st.caption("Sign in to ask questions and keep your conversation history.")
+
+    if not backend_online():
+        st.error(f"Backend is offline. Start it and reload. (Expected at {BACKEND_URL})")
+        return
+
+    login_tab, register_tab = st.tabs(["Log in", "Create account"])
+
+    with login_tab:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Log in", use_container_width=True)
+        if submitted:
+            _do_auth("/login", username, password)
+
+    with register_tab:
+        with st.form("register_form"):
+            username = st.text_input("Choose a username (min 3 chars)")
+            password = st.text_input("Choose a password (min 6 chars)", type="password")
+            submitted = st.form_submit_button("Create account", use_container_width=True)
+        if submitted:
+            _do_auth("/register", username, password)
 
 
-# --- Chat state ---
-if "messages" not in st.session_state:
+def _do_auth(path: str, username: str, password: str) -> None:
+    # Catch obvious problems before hitting the backend, with friendly messages.
+    if len(username.strip()) < 3:
+        st.error("Username must be at least 3 characters.")
+        return
+    if len(password) < 6:
+        st.error("Password must be at least 6 characters.")
+        return
+    try:
+        resp = api_post(path, {"username": username, "password": password}, auth=False)
+        if resp.ok:
+            data = resp.json()
+            st.session_state.token = data["token"]
+            st.session_state.username = data["username"]
+            st.session_state.conversation_id = None
+            st.session_state.messages = []
+            st.rerun()
+        else:
+            st.error(_friendly_error(resp))
+    except requests.RequestException as e:
+        st.error(f"Could not reach the backend: {e}")
+
+
+def _friendly_error(resp: requests.Response) -> str:
+    """Turn a backend error response into a single readable sentence."""
+    try:
+        detail = resp.json().get("detail")
+    except Exception:  # noqa: BLE001
+        return "Something went wrong. Please try again."
+    # FastAPI validation errors come back as a list of dicts; flatten them.
+    if isinstance(detail, list):
+        return " ".join(d.get("msg", "Invalid input.") for d in detail)
+    return detail or "Something went wrong. Please try again."
+
+
+def logout() -> None:
+    for key in ("token", "username", "conversation_id", "messages"):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Conversation loading
+# --------------------------------------------------------------------------- #
+def load_conversation(conv_id: int) -> None:
+    resp = api_get(f"/conversations/{conv_id}/messages")
+    if resp.ok:
+        st.session_state.conversation_id = conv_id
+        st.session_state.messages = resp.json()
+    else:
+        st.error("Could not load that conversation.")
+
+
+def new_chat() -> None:
+    st.session_state.conversation_id = None
     st.session_state.messages = []
 
-# Replay history.
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if msg.get("sources"):
-            render_sources(msg["sources"])
 
+# --------------------------------------------------------------------------- #
+# Main chat app (logged in)
+# --------------------------------------------------------------------------- #
+def chat_app() -> None:
+    with st.sidebar:
+        st.markdown(f"👤 **{st.session_state.username}**")
+        if st.button("➕ New chat", use_container_width=True):
+            new_chat()
+            st.rerun()
 
-# Accept input either from the chat box or a clicked example button.
-prompt = st.chat_input("Ask an HR question...")
-if "pending" in st.session_state:
-    prompt = st.session_state.pop("pending")
+        st.divider()
+        st.subheader("Your conversations")
+        resp = api_get("/conversations")
+        conversations = resp.json() if resp.ok else []
+        if not conversations:
+            st.caption("No conversations yet. Ask something to start one!")
+        for c in conversations:
+            is_current = c["id"] == st.session_state.get("conversation_id")
+            cols = st.columns([0.8, 0.2])
+            label = ("▶ " if is_current else "") + c["title"]
+            if cols[0].button(label, key=f"conv_{c['id']}", use_container_width=True):
+                load_conversation(c["id"])
+                st.rerun()
+            if cols[1].button("🗑️", key=f"del_{c['id']}", use_container_width=True):
+                api_delete(f"/conversations/{c['id']}")
+                if is_current:
+                    new_chat()
+                st.rerun()
 
-if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+        st.divider()
+        if st.button("🚪 Log out", use_container_width=True):
+            logout()
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching the HR documents..."):
-            try:
-                data = ask_backend(prompt)
-                answer = data["answer"]
-                sources = data.get("sources", [])
-            except requests.HTTPError as e:
-                detail = e.response.json().get("detail", str(e))
-                answer, sources = f"⚠️ {detail}", []
-            except requests.RequestException as e:
-                answer, sources = (
-                    f"⚠️ Could not reach the backend at {BACKEND_URL}. "
-                    f"Is it running?\n\n`{e}`",
-                    [],
-                )
+    # --- Main area ---
+    st.title("💬 HR Policy Chatbot")
+    st.caption(
+        "Ask about HR policies — leave, WFH, expenses, benefits. Answers come "
+        "straight from the HR documents."
+    )
 
-        st.markdown(answer)
-        if sources:
+    for msg in st.session_state.get("messages", []):
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            render_sources(msg.get("sources", []))
+
+    prompt = st.chat_input("Ask an HR question...")
+    if prompt:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Searching the HR documents..."):
+                answer, sources = _send_chat(prompt)
+            st.markdown(answer)
             render_sources(sources)
 
-    st.session_state.messages.append(
-        {"role": "assistant", "content": answer, "sources": sources}
-    )
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer, "sources": sources}
+        )
+        st.rerun()  # refresh sidebar (e.g. a brand-new conversation appears)
+
+
+def _send_chat(prompt: str):
+    payload = {"question": prompt, "conversation_id": st.session_state.conversation_id}
+    try:
+        resp = api_post("/chat", payload)
+        if resp.status_code == 401:
+            st.warning("Your session expired. Please log in again.")
+            logout()
+            return "", []
+        resp.raise_for_status()
+        data = resp.json()
+        st.session_state.conversation_id = data["conversation_id"]
+        return data["answer"], data.get("sources", [])
+    except requests.HTTPError as e:
+        try:
+            detail = e.response.json().get("detail", str(e))
+        except Exception:  # noqa: BLE001
+            detail = str(e)
+        return f"⚠️ {detail}", []
+    except requests.RequestException as e:
+        return f"⚠️ Could not reach the backend at {BACKEND_URL}. Is it running?\n\n`{e}`", []
+
+
+# --------------------------------------------------------------------------- #
+# Router
+# --------------------------------------------------------------------------- #
+if "token" not in st.session_state:
+    login_screen()
+else:
+    chat_app()

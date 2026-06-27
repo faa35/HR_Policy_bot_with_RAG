@@ -17,6 +17,11 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.10.2
 
+# --- Database & Auth ---
+sqlmodel==0.0.22       # ORM (SQLAlchemy + Pydantic) over SQLite
+bcrypt==4.2.1          # password hashing
+PyJWT==2.10.1          # login tokens (JSON Web Tokens)
+
 # --- Config / env ---
 python-dotenv==1.0.1
 

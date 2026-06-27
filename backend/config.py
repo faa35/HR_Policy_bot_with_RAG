@@ -18,6 +18,14 @@ DATA_DIR = PROJECT_ROOT / "data" / "hr_docs"      # where the PDFs live
 CHROMA_DIR = PROJECT_ROOT / "chroma_store"         # persistent vector store
 COLLECTION_NAME = "hr_policies"
 
+# --- Database & Auth ---
+DB_PATH = PROJECT_ROOT / "app.db"
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
+# Secret used to sign login tokens. CHANGE THIS in production (set JWT_SECRET in .env).
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me-please")
+JWT_ALGORITHM = "HS256"
+TOKEN_EXPIRE_MINUTES = int(os.getenv("TOKEN_EXPIRE_MINUTES", str(60 * 24 * 7)))  # 7 days
+
 # --- OpenAI ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
