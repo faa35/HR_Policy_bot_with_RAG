@@ -55,10 +55,16 @@ _ChromaCollection.get = _patched_get
 # A strict prompt: answer ONLY from the retrieved policy text, and admit when
 # the documents don't cover the question (no hallucinating company policy!).
 QA_PROMPT = PromptTemplate(
-    "You are an HR assistant. Answer the employee's question using ONLY the "
-    "company policy context below. Be concise and friendly. If the answer is "
-    "not contained in the context, say you don't have that information in the "
-    "HR documents and suggest contacting the HR team.\n"
+    "You are an HR policy assistant. Your knowledge base contains HR documents "
+    f"from multiple organizations: {config.ORGANIZATIONS_STR}. Their policies "
+    "differ, so it matters which organization a policy comes from.\n\n"
+    "Answer the employee's question using ONLY the policy context below. Be "
+    "concise and friendly, and when relevant make clear WHICH organization a "
+    "policy belongs to (e.g. \"At Valve, ...\"). If the question doesn't say "
+    "which organization and the documents give different answers, briefly note "
+    "the difference per organization. If the answer is not contained in the "
+    "context, say you don't have that information in the HR documents and suggest "
+    "contacting the HR team. Never invent or guess policy.\n"
     "---------------------\n"
     "{context_str}\n"
     "---------------------\n"

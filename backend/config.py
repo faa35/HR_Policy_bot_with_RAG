@@ -25,6 +25,25 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
+# --- Branding ---
+# The organizations whose HR documents are in the knowledge base. The assistant
+# is told about these so it can make clear WHICH company a given policy belongs
+# to (policies differ between organizations). Override via the ORGANIZATIONS env
+# var as a comma-separated list, e.g. ORGANIZATIONS="Acme Corp,Globex".
+ORGANIZATIONS = [
+    org.strip()
+    for org in os.getenv(
+        "ORGANIZATIONS", "University of North Georgia, Valve, SHRM"
+    ).split(",")
+    if org.strip()
+]
+
+# A human-readable list for prompts, e.g. "A, B and C".
+if len(ORGANIZATIONS) > 1:
+    ORGANIZATIONS_STR = ", ".join(ORGANIZATIONS[:-1]) + " and " + ORGANIZATIONS[-1]
+else:
+    ORGANIZATIONS_STR = ORGANIZATIONS[0] if ORGANIZATIONS else "the company"
+
 # --- RAG tuning ---
 CHUNK_SIZE = 512          # tokens per chunk
 CHUNK_OVERLAP = 50        # token overlap between chunks
