@@ -1,0 +1,30 @@
+# Render Blueprint — deploys the FastAPI backend.
+#
+# How to use: in the Render dashboard -> New + -> Blueprint -> connect this repo.
+# Render reads this file and creates the service. You then fill in the secret
+# env vars (marked `sync: false`) in the dashboard.
+#
+# The vector store is built at deploy time by running ingest.py during the build
+# (your HR docs in data/hr_docs/ are committed to the repo, so this works). The
+# resulting chroma_store/ is part of the deploy and is read at runtime.
+
+services:
+  - type: web
+    name: hr-policy-chatbot-api
+    runtime: python
+    plan: free
+    rootDir: .
+    buildCommand: "pip install -r backend/requirements.txt && python backend/ingest.py"
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: OPENAI_API_KEY
+        sync: false          # paste in dashboard
+      - key: DATABASE_URL
+        sync: false          # paste your Supabase connection string in dashboard
+      - key: JWT_SECRET
+        generateValue: true  # Render generates a strong random secret for you
+      - key: ORGANIZATIONS
+        value: "University of North Georgia, Valve, SHRM"

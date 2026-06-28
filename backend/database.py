@@ -20,7 +20,14 @@ import config
 _connect_args = (
     {"check_same_thread": False} if config.DATABASE_URL.startswith("sqlite") else {}
 )
-engine = create_engine(config.DATABASE_URL, echo=False, connect_args=_connect_args)
+# pool_pre_ping avoids "stale connection" errors with hosted Postgres (Supabase),
+# whose connections can be dropped after idle periods.
+engine = create_engine(
+    config.DATABASE_URL,
+    echo=False,
+    connect_args=_connect_args,
+    pool_pre_ping=True,
+)
 
 
 class User(SQLModel, table=True):

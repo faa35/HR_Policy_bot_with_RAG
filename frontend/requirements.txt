@@ -1,0 +1,5 @@
+# Frontend-only dependencies (for Streamlit Community Cloud).
+# The frontend is a thin client — it only needs Streamlit + an HTTP client.
+# It does NOT need the heavy backend libraries (llama-index, chromadb, etc.).
+streamlit==1.40.2
+requests==2.32.3

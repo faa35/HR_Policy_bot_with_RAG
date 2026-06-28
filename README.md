@@ -140,6 +140,60 @@ Frontend: <http://localhost:8501> · Backend: <http://localhost:8000/docs>
 Drop any `.pdf`, `.txt`, `.md`, or `.docx` files into `data/hr_docs/`, delete the
 sample ones if you like, then re-run `python ingest.py`. That's it.
 
+## 🌍 Deploying to the web (free)
+
+Three free services, each handling one piece:
+
+| Piece | Platform | Why |
+| ----- | -------- | --- |
+| User database | **Supabase** (Postgres) | Free hosted SQL database |
+| Backend (FastAPI + vector store) | **Render** | Free always-on Python host |
+| Frontend (Streamlit) | **Streamlit Community Cloud** | Free, built for Streamlit |
+
+> ⚠️ **Not Vercel.** Vercel is for static sites + short serverless functions. This
+> app needs always-on Python servers with a filesystem, which Vercel doesn't provide.
+
+> 🧠 **The vector store needs no separate host.** It's read-only at runtime, so
+> [render.yaml](render.yaml) rebuilds it at deploy time (`python backend/ingest.py`)
+> from the committed docs in `data/hr_docs/`. No Pinecone/Qdrant needed.
+
+### Step 0 — Push to GitHub
+Commit everything and push. (`.env`, `chroma_store/`, and `*.db` are git-ignored —
+secrets and local data stay out of the repo. Your HR docs in `data/hr_docs/` **are**
+committed so the deploy can build the vector store.)
+
+### Step 1 — Database on Supabase
+1. Create a free project at [supabase.com](https://supabase.com).
+2. Project Settings → **Database** → **Connection string** → **URI**. Copy it
+   (use the **connection pooler** URI). It looks like:
+   `postgresql://postgres.xxxx:[PASSWORD]@aws-0-region.pooler.supabase.com:6543/postgres`
+3. Replace `[PASSWORD]` with your DB password. This is your `DATABASE_URL`.
+
+### Step 2 — Backend on Render
+1. At [render.com](https://render.com): **New +** → **Blueprint** → connect this repo.
+   Render reads [render.yaml](render.yaml) automatically.
+2. When prompted, set the secret env vars:
+   - `OPENAI_API_KEY` — your OpenAI key
+   - `DATABASE_URL` — the Supabase URI from Step 1
+   - (`JWT_SECRET` is auto-generated; `ORGANIZATIONS` is preset.)
+3. Deploy. You'll get a URL like `https://hr-policy-chatbot-api.onrender.com`.
+   Check `…/health` returns `{"status":"ok"}` and `…/docs` shows the API.
+
+### Step 3 — Frontend on Streamlit Cloud
+1. At [share.streamlit.io](https://share.streamlit.io): **New app** → pick this repo.
+2. Set **Main file path** to `frontend/app.py`.
+3. In **Advanced settings → Secrets**, add:
+   ```toml
+   BACKEND_URL = "https://hr-policy-chatbot-api.onrender.com"
+   ```
+4. Deploy. You get a public `https://your-app.streamlit.app` — **share this link.** 🎉
+
+### Notes
+- **Free Render services sleep** after ~15 min idle; the first request then takes
+  ~30–60s to wake. Fine for a portfolio; upgrade to a paid plan to keep it warm.
+- **Changed your docs?** Re-deploy the Render service — the build re-runs `ingest.py`.
+- **Set a strong `JWT_SECRET`** (Render's blueprint generates one automatically).
+
 ## 💡 Notes & next steps
 
 - **Cost:** uses `gpt-4o-mini` + `text-embedding-3-small` (very cheap). Switch
