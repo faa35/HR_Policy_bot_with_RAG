@@ -16,7 +16,19 @@ import os
 import requests
 import streamlit as st
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+def _resolve_backend_url() -> str:
+    """Find the backend URL: env var (local) -> Streamlit secret (cloud) -> localhost."""
+    url = os.getenv("BACKEND_URL")
+    if url:
+        return url
+    try:
+        return st.secrets["BACKEND_URL"]  # set in Streamlit Cloud "Secrets"
+    except Exception:  # noqa: BLE001 — no secrets file locally is fine
+        return "http://localhost:8000"
+
+
+BACKEND_URL = _resolve_backend_url()
 
 st.set_page_config(page_title="HR Policy Chatbot", page_icon="💬", layout="centered")
 
