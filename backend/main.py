@@ -12,6 +12,9 @@ Authenticated endpoints (require  Authorization: Bearer <token>):
     GET    /conversations/{id}/messages    messages in one thread
     DELETE /conversations/{id}             delete a thread
     POST   /chat   {question, conversation_id?}  -> answer + sources (and saves both)
+    POST   /documents/upload   multipart, up to 3 PDFs  -> replaces the user's upload batch
+    GET    /documents                      list the user's currently active uploaded files
+    DELETE /documents                      clear the user's uploaded batch
 
 Run:
     cd backend
@@ -19,17 +22,20 @@ Run:
 Docs: http://localhost:8000/docs
 """
 import json
+import shutil
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 import auth
+import config
 import database
 import retriever
-from database import Conversation, Message, User
+import user_index
+from database import Conversation, Message, User, UserDocument
 
 
 @asynccontextmanager
@@ -97,6 +103,17 @@ class MessageOut(BaseModel):
     role: str
     content: str
     sources: list[Source] = []
+
+
+class DocumentOut(BaseModel):
+    id: int
+    filename: str
+    uploaded_at: str
+
+
+class UploadResponse(BaseModel):
+    documents: list[DocumentOut]
+    chunks_indexed: int
 
 
 # --------------------------------------------------------------------------- #
@@ -217,9 +234,9 @@ def chat(
         session.commit()
         session.refresh(conv)
 
-    # Run RAG.
+    # Run RAG (routes between the user's uploaded docs and/or the policy library).
     try:
-        result = retriever.answer(req.question)
+        result = retriever.answer(req.question, user_id=user.id)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:  # noqa: BLE001
@@ -244,4 +261,104 @@ def chat(
         sources=result["sources"],
         conversation_id=conv.id,
         title=conv.title,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# User-uploaded documents
+# --------------------------------------------------------------------------- #
+@app.get("/documents", response_model=list[DocumentOut])
+def list_documents(
+    user: User = Depends(auth.get_current_user),
+    session: Session = Depends(database.get_session),
+):
+    rows = session.exec(
+        select(UserDocument)
+        .where(UserDocument.user_id == user.id)
+        .order_by(UserDocument.created_at)
+    ).all()
+    return [
+        DocumentOut(id=d.id, filename=d.filename, uploaded_at=d.created_at.isoformat())
+        for d in rows
+    ]
+
+
+@app.delete("/documents")
+def clear_documents(
+    user: User = Depends(auth.get_current_user),
+    session: Session = Depends(database.get_session),
+):
+    rows = session.exec(select(UserDocument).where(UserDocument.user_id == user.id)).all()
+    for row in rows:
+        session.delete(row)
+    session.commit()
+    user_index.replace_user_documents(user.id, saved_paths=[])
+
+    upload_dir = config.USER_UPLOAD_DIR / str(user.id)
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir, ignore_errors=True)
+
+    return {"status": "cleared"}
+
+
+@app.post("/documents/upload", response_model=UploadResponse)
+def upload_documents(
+    files: list[UploadFile] = File(...),
+    user: User = Depends(auth.get_current_user),
+    session: Session = Depends(database.get_session),
+):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > config.MAX_USER_DOCS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can upload at most {config.MAX_USER_DOCS} PDFs at a time.",
+        )
+    for f in files:
+        if not f.filename.lower().endswith(".pdf"):
+            raise HTTPException(
+                status_code=400, detail=f"'{f.filename}' is not a PDF."
+            )
+
+    # Wipe this user's previous batch (DB rows, saved files, vectors) first —
+    # uploads replace, they don't accumulate.
+    upload_dir = config.USER_UPLOAD_DIR / str(user.id)
+    if upload_dir.exists():
+        shutil.rmtree(upload_dir, ignore_errors=True)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    old_rows = session.exec(
+        select(UserDocument).where(UserDocument.user_id == user.id)
+    ).all()
+    for row in old_rows:
+        session.delete(row)
+    session.commit()
+
+    saved_paths = []
+    for f in files:
+        dest = upload_dir / f.filename
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(f.file, out)
+        saved_paths.append(dest)
+        session.add(UserDocument(user_id=user.id, filename=f.filename))
+    session.commit()
+
+    try:
+        chunks_indexed = user_index.replace_user_documents(user.id, saved_paths)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to index documents: {e}")
+
+    rows = session.exec(
+        select(UserDocument)
+        .where(UserDocument.user_id == user.id)
+        .order_by(UserDocument.created_at)
+    ).all()
+    return UploadResponse(
+        documents=[
+            DocumentOut(id=d.id, filename=d.filename, uploaded_at=d.created_at.isoformat())
+            for d in rows
+        ],
+        chunks_indexed=chunks_indexed,
     )

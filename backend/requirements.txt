@@ -16,6 +16,7 @@ docx2txt==0.9          # required by LlamaIndex to read .docx (Word) files
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.10.2
+python-multipart==0.0.17   # required by FastAPI to parse multipart/form-data (file uploads)
 
 # --- Database & Auth ---
 sqlmodel==0.0.22         # ORM (SQLAlchemy + Pydantic) over SQLite / Postgres

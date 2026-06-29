@@ -53,6 +53,20 @@ class Message(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class UserDocument(SQLModel, table=True):
+    """One row per PDF in a user's current upload batch (max 3 at a time).
+
+    Uploading a new batch deletes the user's previous rows (and their vectors)
+    first — see user_index.replace_user_documents(). There is no "old batch"
+    kept around on purpose, to keep the per-user collection small and the
+    router's job simple (it only ever has ONE active batch to reason about).
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    filename: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def init_db() -> None:
     """Create all tables if they don't exist yet. Safe to call on every startup."""
     SQLModel.metadata.create_all(engine)

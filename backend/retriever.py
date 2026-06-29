@@ -16,11 +16,14 @@ from typing import Any
 import chromadb
 from llama_index.core import VectorStoreIndex, Settings
 from llama_index.core.prompts import PromptTemplate
+from llama_index.core.schema import NodeWithScore
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 import config
+import router
+import user_index
 
 # --- Compatibility shim -----------------------------------------------------
 # llama-index-vector-stores-chroma 0.2.1 sends an empty `where={}` to ChromaDB
@@ -57,14 +60,18 @@ _ChromaCollection.get = _patched_get
 QA_PROMPT = PromptTemplate(
     "You are an HR policy assistant. Your knowledge base contains HR documents "
     f"from multiple organizations: {config.ORGANIZATIONS_STR}. Their policies "
-    "differ, so it matters which organization a policy comes from.\n\n"
-    "Answer the employee's question using ONLY the policy context below. Be "
-    "concise and friendly, and when relevant make clear WHICH organization a "
-    "policy belongs to (e.g. \"At Valve, ...\"). If the question doesn't say "
-    "which organization and the documents give different answers, briefly note "
-    "the difference per organization. If the answer is not contained in the "
-    "context, say you don't have that information in the HR documents and suggest "
-    "contacting the HR team. Never invent or guess policy.\n"
+    "differ, so it matters which organization a policy comes from. The context "
+    "below may also include documents the employee personally uploaded — those "
+    "take priority for anything they specifically describe, since they're more "
+    "recent/specific than the general policy library.\n\n"
+    "Answer the employee's question using ONLY the context below. Be concise "
+    "and friendly, and when relevant make clear WHICH organization or document "
+    "a policy belongs to (e.g. \"At Valve, ...\" or \"According to the document "
+    "you uploaded, ...\"). If the question doesn't say which source and the "
+    "documents give different answers, briefly note the difference. If the "
+    "answer is not contained in the context, say you don't have that "
+    "information and suggest contacting the HR team. Never invent or guess "
+    "policy.\n"
     "---------------------\n"
     "{context_str}\n"
     "---------------------\n"
@@ -74,8 +81,10 @@ QA_PROMPT = PromptTemplate(
 
 
 @lru_cache(maxsize=1)
-def _get_query_engine():
-    """Build the query engine once and reuse it across requests."""
+def _get_policy_index() -> VectorStoreIndex:
+    """The shared HR-policy index, built once and cached (separate from the
+    full query engine below, since routing sometimes needs raw nodes from
+    this index merged with nodes from a user's uploaded-doc index)."""
     config.require_api_key()
 
     if not config.CHROMA_DIR.exists():
@@ -94,26 +103,21 @@ def _get_query_engine():
     chroma_client = chromadb.PersistentClient(path=str(config.CHROMA_DIR))
     collection = chroma_client.get_or_create_collection(config.COLLECTION_NAME)
     vector_store = ChromaVectorStore(chroma_collection=collection)
+    return VectorStoreIndex.from_vector_store(vector_store)
 
-    index = VectorStoreIndex.from_vector_store(vector_store)
 
-    return index.as_query_engine(
+@lru_cache(maxsize=1)
+def _get_query_engine():
+    """Build the query engine once and reuse it across requests."""
+    return _get_policy_index().as_query_engine(
         similarity_top_k=config.TOP_K,
         text_qa_template=QA_PROMPT,
     )
 
 
-def answer(question: str) -> dict[str, Any]:
-    """Return a dict with the answer text and the source chunks used."""
-    engine = _get_query_engine()
-    response = engine.query(question)
-
+def _nodes_to_sources(nodes: list[NodeWithScore]) -> list[dict[str, Any]]:
     sources = []
-    for node in response.source_nodes:
-        # Show the FULL chunk, not just the first N characters. The chunk is a
-        # fixed piece of text decided at ingest time; truncating from the start
-        # ([:800]) could hide the answer if it sits near the end of the chunk.
-        # Chunks are bounded by CHUNK_SIZE, so they won't be huge.
+    for node in nodes:
         sources.append(
             {
                 "file": node.metadata.get("file_name", "unknown"),
@@ -122,8 +126,69 @@ def answer(question: str) -> dict[str, Any]:
                 "text": node.node.get_content().strip(),
             }
         )
+    return sources
 
-    return {"answer": str(response).strip(), "sources": sources}
+
+def answer(question: str, user_id: int | None = None) -> dict[str, Any]:
+    """Return a dict with the answer text and the source chunks used.
+
+    If user_id is given and that user has an active uploaded-document batch,
+    a quick routing step (router.route) decides whether to pull context from
+    the user's uploaded docs, the shared policy library, or both — before any
+    generation happens. With no user_id (or no uploaded docs), this behaves
+    exactly as before: policy library only.
+    """
+    has_uploads = user_id is not None and user_index.has_documents(user_id)
+    uploaded_filenames: list[str] = []
+    preview = ""
+    if has_uploads:
+        # Cheap metadata/content pull just for the router prompt — not a
+        # real similarity query. The preview matters: a filename alone
+        # doesn't tell the router WHAT organization/topic the upload
+        # actually covers.
+        uploaded_filenames = user_index.list_filenames(user_id)
+        preview = user_index.content_preview(user_id)
+
+    decision = router.route(
+        question,
+        has_uploaded_docs=has_uploads,
+        uploaded_filenames=uploaded_filenames,
+        content_preview=preview,
+        known_organizations=config.ORGANIZATIONS_STR,
+    )
+
+    # Fast path: no uploads in play at all, behave like the original single
+    # query engine (keeps this the cheapest, simplest case).
+    if decision == "OLD" and not has_uploads:
+        engine = _get_query_engine()
+        response = engine.query(question)
+        return {
+            "answer": str(response).strip(),
+            "sources": _nodes_to_sources(response.source_nodes),
+        }
+
+    # Otherwise gather raw nodes from whichever source(s) the router picked,
+    # then synthesize one answer from the combined context ourselves.
+    nodes: list[NodeWithScore] = []
+    if decision in ("OLD", "BOTH"):
+        policy_retriever = _get_policy_index().as_retriever(similarity_top_k=config.TOP_K)
+        nodes.extend(policy_retriever.retrieve(question))
+    if decision in ("NEW", "BOTH") and has_uploads:
+        nodes.extend(user_index.retrieve_nodes(user_id, question))
+
+    if not nodes:
+        return {
+            "answer": "I don't have that information in the HR documents. "
+            "Please contact the HR team for help with this question.",
+            "sources": [],
+        }
+
+    context_str = "\n\n".join(n.node.get_content().strip() for n in nodes)
+    llm = OpenAI(model=config.LLM_MODEL, api_key=config.OPENAI_API_KEY, temperature=0.1)
+    prompt = QA_PROMPT.format(context_str=context_str, query_str=question)
+    response_text = str(llm.complete(prompt)).strip()
+
+    return {"answer": response_text, "sources": _nodes_to_sources(nodes)}
 
 
 if __name__ == "__main__":

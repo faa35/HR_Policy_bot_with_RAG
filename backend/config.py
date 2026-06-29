@@ -1,3 +1,73 @@
+# """
+# Central configuration for the HR Policy Chatbot.
+
+# Everything that ingest.py, retriever.py and main.py need to agree on
+# (paths, model names, chunking) lives here so there's a single source of truth.
+# """
+# import os
+# from pathlib import Path
+
+# from dotenv import load_dotenv
+
+# # Load variables from the .env file at the project root.
+# PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# load_dotenv(PROJECT_ROOT / ".env")
+
+# # --- Paths ---
+# DATA_DIR = PROJECT_ROOT / "data" / "hr_docs"      # where the PDFs live
+# CHROMA_DIR = PROJECT_ROOT / "chroma_store"         # persistent vector store
+# COLLECTION_NAME = "hr_policies"
+
+# # --- Database & Auth ---
+# DB_PATH = PROJECT_ROOT / "app.db"
+# DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
+# # Secret used to sign login tokens. CHANGE THIS in production (set JWT_SECRET in .env).
+# JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me-please")
+# JWT_ALGORITHM = "HS256"
+# TOKEN_EXPIRE_MINUTES = int(os.getenv("TOKEN_EXPIRE_MINUTES", str(60 * 24 * 7)))  # 7 days
+
+# # --- OpenAI ---
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# # Models. gpt-4o-mini is cheap + good enough for doc Q&A; bump to gpt-4o if you like.
+# LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+# EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
+
+# # --- Branding ---
+# # The organizations whose HR documents are in the knowledge base. The assistant
+# # is told about these so it can make clear WHICH company a given policy belongs
+# # to (policies differ between organizations). Override via the ORGANIZATIONS env
+# # var as a comma-separated list, e.g. ORGANIZATIONS="Acme Corp,Globex".
+# ORGANIZATIONS = [
+#     org.strip()
+#     for org in os.getenv(
+#         "ORGANIZATIONS", "University of North Georgia, Valve, SHRM"
+#     ).split(",")
+#     if org.strip()
+# ]
+
+# # A human-readable list for prompts, e.g. "A, B and C".
+# if len(ORGANIZATIONS) > 1:
+#     ORGANIZATIONS_STR = ", ".join(ORGANIZATIONS[:-1]) + " and " + ORGANIZATIONS[-1]
+# else:
+#     ORGANIZATIONS_STR = ORGANIZATIONS[0] if ORGANIZATIONS else "the company"
+
+# # --- RAG tuning ---
+# CHUNK_SIZE = 512          # tokens per chunk
+# CHUNK_OVERLAP = 50        # token overlap between chunks
+# TOP_K = 3                 # how many chunks to retrieve per question
+
+
+# def require_api_key() -> None:
+#     """Fail fast with a clear message if the key is missing."""
+#     if not OPENAI_API_KEY:
+#         raise RuntimeError(
+#             "OPENAI_API_KEY is not set. Create a .env file at the project root "
+#             "with a line like:  OPENAI_API_KEY=sk-...\n"
+#             "See .env.example for the template."
+#         )
+
+
 """
 Central configuration for the HR Policy Chatbot.
 
@@ -56,6 +126,15 @@ else:
 CHUNK_SIZE = 512          # tokens per chunk
 CHUNK_OVERLAP = 50        # token overlap between chunks
 TOP_K = 3                 # how many chunks to retrieve per question
+
+# --- User-uploaded documents (per-user temporary knowledge base) ---
+# Each user can upload up to MAX_USER_DOCS PDFs at a time. Uploading a new
+# batch replaces the previous one. Vectors live in their own Chroma
+# collection per user, named f"{USER_DOCS_COLLECTION_PREFIX}{user_id}".
+
+MAX_USER_DOCS = 3
+USER_DOCS_COLLECTION_PREFIX = "user_docs_"
+USER_UPLOAD_DIR = PROJECT_ROOT / "user_uploads"   # scratch space, PDFs deleted after ingest
 
 
 def require_api_key() -> None:

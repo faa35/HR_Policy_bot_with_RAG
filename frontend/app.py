@@ -53,6 +53,17 @@ def api_delete(path: str) -> requests.Response:
     return requests.delete(f"{BACKEND_URL}{path}", headers=_auth_headers(), timeout=30)
 
 
+def api_upload(files) -> requests.Response:
+    """files: list of Streamlit UploadedFile objects."""
+    multipart = [("files", (f.name, f.getvalue(), "application/pdf")) for f in files]
+    return requests.post(
+        f"{BACKEND_URL}/documents/upload",
+        files=multipart,
+        headers=_auth_headers(),
+        timeout=120,  # indexing can take a moment
+    )
+
+
 def backend_online() -> bool:
     try:
         return requests.get(f"{BACKEND_URL}/health", timeout=3).ok
@@ -71,6 +82,52 @@ def render_sources(sources: list[dict]) -> None:
             st.markdown(f"**{s['file']}**{page}{score}")
             st.text(s["text"])
             st.divider()
+
+
+def refresh_uploaded_docs() -> None:
+    resp = api_get("/documents")
+    st.session_state.uploaded_docs = resp.json() if resp.ok else []
+
+
+def render_upload_bar() -> None:
+    """Compact attach-style row directly above the chat input: shows active
+    uploaded docs as removable chips, plus a small uploader to add a new
+    batch (replaces any previous batch — max MAX_USER_DOCS files)."""
+    if "uploaded_docs" not in st.session_state:
+        refresh_uploaded_docs()
+
+    docs = st.session_state.uploaded_docs
+    bar = st.container()
+    with bar:
+        if docs:
+            names = " · ".join(f"📎 {d['filename']}" for d in docs)
+            cols = st.columns([0.85, 0.15])
+            cols[0].caption(f"Using your uploaded docs: {names}")
+            if cols[1].button("Clear", key="clear_docs", use_container_width=True):
+                api_delete("/documents")
+                refresh_uploaded_docs()
+                st.rerun()
+        else:
+            with st.popover("📎 Attach HR policy PDFs (up to 3)"):
+                new_files = st.file_uploader(
+                    "Upload up to 3 PDFs — the assistant will use these alongside "
+                    "(or instead of) the standard policy library, depending on "
+                    "your question.",
+                    type=["pdf"],
+                    accept_multiple_files=True,
+                    key="pdf_uploader",
+                )
+                if new_files:
+                    if len(new_files) > 3:
+                        st.error("Please select at most 3 PDFs.")
+                    elif st.button("Upload", key="do_upload"):
+                        with st.spinner("Indexing your documents..."):
+                            resp = api_upload(new_files)
+                        if resp.ok:
+                            refresh_uploaded_docs()
+                            st.rerun()
+                        else:
+                            st.error(_friendly_error(resp))
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +196,7 @@ def _friendly_error(resp: requests.Response) -> str:
 
 
 def logout() -> None:
-    for key in ("token", "username", "conversation_id", "messages"):
+    for key in ("token", "username", "conversation_id", "messages", "uploaded_docs"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -205,6 +262,8 @@ def chat_app() -> None:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             render_sources(msg.get("sources", []))
+
+    render_upload_bar()
 
     prompt = st.chat_input("Ask an HR question...")
     if prompt:
